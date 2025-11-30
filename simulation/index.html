@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Mesh Message Flow Demo — with Add Node</title>
+<style>
+  :root { --bg:#0b1020; --panel:#121935; --ink:#eaf0ff; --muted:#a9b7ff; --accent:#68a0ff; --ok:#36d28a; --err:#ff6b6b; }
+  *{ box-sizing:border-box; }
+  html, body { height:100%; margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; color:var(--ink); background:linear-gradient(180deg,#0b1020,#0e1531); }
+  .wrap { display:grid; grid-template-columns: 380px 1fr; height:100%; }
+  aside { padding:14px; border-right:1px solid #223064; background:var(--panel); display:flex; flex-direction:column; gap:12px; }
+  h1 { font-size:18px; margin:0; }
+  .muted { color:var(--muted); font-size:12px; }
+  .box { background:#0d1430; border:1px solid #26366f; border-radius:14px; padding:12px; }
+  label { font-size:12px; color:var(--muted); display:block; margin-bottom:4px; }
+  input, button, select { font:inherit; }
+  button { background:#1f66ff; color:#fff; border:0; padding:9px 12px; border-radius:12px; cursor:pointer; font-weight:600; }
+  button.ghost { background:transparent; border:1px solid #3651a9; color:#cfe1ff; }
+  button.bad { background:var(--err); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  select, input[type="number"], input[type="text"] { width:100%; padding:8px 10px; border-radius:10px; border:1px solid #2a3a78; background:#0b1230; color:#eaf0ff; }
+  .trace { height:200px; overflow:auto; background:#0a1231; border:1px solid #26366f; border-radius:12px; padding:8px; font-size:13px; }
+  .badge { display:inline-block; padding:2px 8px; font-size:11px; border-radius:999px; background:#172353; border:1px solid #33488e; color:#cfe1ff; }
+  .legend { font-size:12px; display:grid; grid-template-columns:1fr; gap:6px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .on { background:var(--ok); } .off { background:var(--err); } .tx { background:var(--accent); }
+  .canvasWrap { position:relative; }
+  canvas { display:block; width:100%; height:100%; }
+  .hint { font-size:11px; color:#9fb0ffcc; }
+  .pill { display:inline-block; padding:2px 8px; font-size:11px; border-radius:999px; background:#1b2858; border:1px solid #30428c; color:#cfe1ff; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside>
+    <div>
+      <h1>Mesh Message Flow Demo</h1>
+      <div class="muted">ESP32 AP (local UI) + LoRa hops. Now with <b>Add Node</b>, per-node controls, and deletion.</div>
+    </div>
+
+    <!-- Controls: scenario -->
+    <div class="box">
+      <div class="row">
+        <button id="send">Send Demo Message</button>
+        <button id="reset" class="ghost">Reset Scene</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div style="flex:1">
+          <label>Sender</label>
+          <select id="sender"></select>
+        </div>
+        <div style="flex:1">
+          <label>TTL (max hops)</label>
+          <input id="ttl" type="number" min="1" max="10" value="5" />
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div style="flex:1">
+          <label>Per-hop delay (ms)</label>
+          <input id="delay" type="number" min="50" step="50" value="1000" />
+        </div>
+        <div style="flex:1">
+          <label>Packet loss (%)</label>
+          <input id="loss" type="number" min="0" max="50" value="5" />
+        </div>
+      </div>
+      <div style="margin-top:8px">
+        <label>Message</label>
+        <input id="msg" type="text" value="Evacuate to shelter Level-2" />
+      </div>
+      <div class="hint" style="margin-top:8px">Drag nodes • Shift+drag to pan • Scroll to zoom • Double-click node to toggle solar</div>
+    </div>
+
+    <!-- Add / links / randomize -->
+    <div class="box">
+      <div class="row">
+        <button id="addNode">Add Node</button>
+        <button id="toggleLinks" class="ghost">Toggle Links</button>
+        <button id="randomize" class="ghost">Randomize</button>
+      </div>
+      <div class="hint" style="margin-top:8px">Tip: you can also <b>Ctrl/Cmd+Click</b> on the canvas to add a node at cursor.</div>
+    </div>
+
+    <!-- Selected node inspector -->
+    <div class="box" id="inspector" hidden>
+      <div class="row" style="justify-content:space-between; align-items:center">
+        <span class="badge">Selected Node</span>
+        <span id="selState" class="pill">ON</span>
+      </div>
+      <div style="margin-top:8px">
+        <label>SSID</label>
+        <input id="ssidInput" type="text" />
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div style="flex:1">
+          <label>Range (m)</label>
+          <input id="rangeInput" type="number" min="200" max="2400" step="50" />
+        </div>
+        <div style="flex:1">
+          <label>Power</label>
+          <button id="togglePower" class="ghost">Toggle</button>
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="rename" class="ghost">Rename</button>
+        <button id="toggleSolar" class="ghost">Solar On/Off</button>
+        <button id="deleteNode" class="bad">Delete</button>
+      </div>
+      <div class="hint" style="margin-top:8px">Double-click node to toggle solar quickly.</div>
+    </div>
+
+    <!-- Trace -->
+    <div class="box">
+      <div class="row" style="justify-content:space-between">
+        <div><span class="badge">Trace</span></div>
+        <div class="legend">
+          <div><span class="dot on"></span>Node ON</div>
+          <div><span class="dot tx"></span>Transmitting</div>
+          <div><span class="dot off"></span>Node OFF</div>
+        </div>
+      </div>
+      <div id="trace" class="trace"></div>
+    </div>
+  </aside>
+
+  <main class="canvasWrap">
+    <canvas id="cv"></canvas>
+  </main>
+</div>
+
+<script>
+/* ----------------- Utilities ----------------- */
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+let W = cv.width = innerWidth - 380, H = cv.height = innerHeight;
+addEventListener('resize', () => { W = cv.width = innerWidth - 380; H = cv.height = innerHeight; draw(); });
+const now = () => performance.now();
+const rnd = (a,b)=>Math.random()*(b-a)+a;
+
+/* ----------------- Camera ----------------- */
+let cam = { x:0, y:0, s:1 };
+const toS = (x,y)=>({ x:(x+cam.x)*cam.s, y:(y+cam.y)*cam.s });
+const toW = (x,y)=>({ x:x/cam.s - cam.x, y:y/cam.s - cam.y });
+
+/* ----------------- Model ----------------- */
+let nodes = [];
+let edges = []; // recomputed from ranges
+let packets = []; // animations
+let selectedId = null;
+let showLinks = true;
+const RADIUS = 18;
+const DEFAULT_RANGE = 1200; // meters (visualized)
+let idCounter = 1;
+function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy)*2; } // px≈2m
+
+function makeNode(name, x, y, range=DEFAULT_RANGE){
+  return { id: name, x, y, on:true, solar:false, range, tx:0, buffer:[], seen:new Set() };
+}
+function seed(){
+  nodes = [
+    makeNode('LoRaChat-Shelter-A', W*0.28, H*0.60),
+    makeNode('LoRaChat-Village',   W*0.50, H*0.30),
+    makeNode('LoRaChat-Clinic',    W*0.72, H*0.62),
+    makeNode('LoRaChat-School',    W*0.50, H*0.80)
+  ];
+  idCounter = 5;
+  refreshSenderList();
+  $('trace').innerHTML = '';
+  selectedId = null; updateInspector();
+  recomputeEdges();
+  draw();
+}
+function refreshSenderList(){
+  const s = $('sender'); s.innerHTML = '';
+  nodes.forEach(n => { const o = document.createElement('option'); o.value=n.id; o.textContent=n.id; s.appendChild(o); });
+  if(nodes.length) s.value = nodes[Math.min(1, nodes.length-1)].id;
+}
+
+/* ----------------- Flow Logic ----------------- */
+function recomputeEdges(){
+  edges = [];
+  for(let i=0;i<nodes.length;i++) for(let j=i+1;j<nodes.length;j++){
+    const a=nodes[i], b=nodes[j];
+    if(a.on && b.on && dist(a,b)<=a.range && dist(a,b)<=b.range) edges.push([a,b]);
+  }
+}
+function neighbors(n){
+  return nodes.filter(m => m!==n && m.on && n.on && dist(n,m)<=n.range && dist(n,m)<=m.range);
+}
+function logTrace(line){
+  const t = $('trace'); const p = document.createElement('div'); p.textContent=line; t.appendChild(p); t.scrollTop = t.scrollHeight;
+}
+function pushBuffer(n, line){
+  if(n.buffer.length>=50) n.buffer.shift();
+  n.buffer.push(line);
+}
+
+function animateHop(from, to){
+  const a = toS(from.x, from.y), b = toS(to.x, to.y);
+  packets.push({ ax:a.x, ay:a.y, bx:b.x, by:b.y, t0:now(), dur: Math.max(250, +$('delay').value*0.6) });
+  from.tx = 1;
+}
+
+function deliverLocal(n, pkt){
+  n.seen.add(pkt.id);
+  pushBuffer(n, `${pkt.name}: ${pkt.text}`);
+  logTrace(`[${((now()-pkt.tStart)/1000).toFixed(2)}s] ${n.id} received (hops=${pkt.hops})`);
+}
+
+function flood(from, pkt){
+  animateHop(from, from); // brief pulse at origin
+  neighbors(from).forEach(nb=>{
+    const loss = Math.random()*100 < Math.min(50, Math.max(0, +$('loss').value||0));
+    const delay = (+$('delay').value||1000) + Math.floor(Math.random()*250);
+    setTimeout(()=>{
+      if(loss) { logTrace(`· dropped en route to ${nb.id}`); return; }
+      if(nb.seen.has(pkt.id)) return;
+      const next = { ...pkt, hops:pkt.hops+1, ttl:pkt.ttl-1 };
+      animateHop(from, nb);
+      deliverLocal(nb, next);
+      if(next.ttl>0) flood(nb, next);
+    }, delay);
+  });
+}
+
+function sendDemo(){
+  if(!nodes.length) return;
+  const sender = nodes.find(n=>n.id === $('sender').value) || nodes[0];
+  if(!sender || !sender.on) { logTrace('Cannot send: sender is OFF'); return; }
+  const text = ($('msg').value||'').trim(); if(!text) return;
+  const ttl = Math.max(1, Math.min(10, +$('ttl').value||5));
+  const pkt = { id: `${Date.now()}-${Math.random().toString(36).slice(2,7)}`, name:'Volunteer', text, ttl, hops:0, tStart: now() };
+  deliverLocal(sender, pkt);
+  logTrace(`Sent from ${sender.id} with TTL=${ttl}`);
+  flood(sender, pkt);
+}
+
+/* ----------------- Add / Edit / Delete Nodes ----------------- */
+function addNodeAt(x, y){
+  const id = `LoRaChat-${idCounter++}`;
+  const n = makeNode(id, x, y, DEFAULT_RANGE);
+  nodes.push(n);
+  refreshSenderList();
+  selectNode(n.id);
+  recomputeEdges();
+  draw();
+  logTrace(`+ Added node ${n.id}`);
+}
+function addNodeCenter(){
+  const w = toW(W*0.5, H*0.5);
+  addNodeAt(w.x, w.y);
+}
+function selectNode(id){
+  selectedId = id;
+  updateInspector();
+}
+function updateInspector(){
+  const box = $('inspector');
+  if(!selectedId){ box.hidden = true; return; }
+  const n = nodes.find(x=>x.id===selectedId);
+  if(!n){ box.hidden = true; return; }
+  box.hidden = false;
+  $('ssidInput').value = n.id;
+  $('rangeInput').value = n.range;
+  $('selState').textContent = n.on ? 'ON' : 'OFF';
+  $('selState').style.background = n.on ? '#1b3b33' : '#3b1b1b';
+}
+$('addNode').onclick = addNodeCenter;
+$('toggleLinks').onclick = ()=>{ showLinks=!showLinks; draw(); };
+$('randomize').onclick = ()=>{
+  nodes.forEach(n=>{ n.x = rnd(W*0.15, W*0.85); n.y = rnd(H*0.15, H*0.85); });
+  recomputeEdges(); draw();
+};
+
+$('rename').onclick = ()=>{
+  const n = nodes.find(x=>x.id===selectedId); if(!n) return;
+  const name = ($('ssidInput').value||'').trim(); if(!name) return;
+  n.id = name; refreshSenderList(); updateInspector(); draw();
+};
+$('togglePower').onclick = ()=>{
+  const n = nodes.find(x=>x.id===selectedId); if(!n) return;
+  n.on = !n.on; updateInspector(); recomputeEdges(); draw();
+};
+$('toggleSolar').onclick = ()=>{
+  const n = nodes.find(x=>x.id===selectedId); if(!n) return;
+  n.solar = !n.solar; draw();
+};
+$('deleteNode').onclick = ()=>{
+  if(!selectedId) return;
+  const idx = nodes.findIndex(n=>n.id===selectedId);
+  if(idx>=0){ logTrace(`- Deleted node ${nodes[idx].id}`); nodes.splice(idx,1); selectedId=null; updateInspector(); refreshSenderList(); recomputeEdges(); draw(); }
+};
+$('rangeInput').addEventListener('change', e=>{
+  const n = nodes.find(x=>x.id===selectedId); if(!n) return;
+  let v = +e.target.value||DEFAULT_RANGE; v = Math.max(200, Math.min(2400, v));
+  n.range = v; recomputeEdges(); draw();
+});
+
+/* ----------------- Canvas ----------------- */
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.save(); ctx.scale(cam.s, cam.s); ctx.translate(cam.x, cam.y);
+
+  // links
+  if(showLinks){
+    edges.forEach(([a,b])=>{
+      ctx.strokeStyle = 'rgba(90,130,255,0.25)';
+      ctx.lineWidth = 1/cam.s;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    });
+  }
+
+  // nodes
+  nodes.forEach(n=>{
+    // range
+    ctx.beginPath(); ctx.arc(n.x, n.y, n.range/2, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(70,90,170,0.08)'; ctx.fill();
+
+    // body
+    ctx.beginPath(); ctx.arc(n.x, n.y, RADIUS+2, 0, Math.PI*2);
+    ctx.fillStyle = '#0a1444'; ctx.fill();
+    ctx.lineWidth = 2/cam.s; ctx.strokeStyle = n.on ? '#36d28a' : '#ff6b6b'; ctx.stroke();
+
+    // inner
+    ctx.beginPath(); ctx.arc(n.x, n.y, RADIUS, 0, Math.PI*2);
+    const inner = n.on ? (n.tx>0 ? '#68a0ff' : '#a3b6ff') : '#5e2433';
+    ctx.fillStyle = inner; ctx.fill();
+
+    // label
+    ctx.font = `${12/cam.s}px system-ui, sans-serif`; ctx.textAlign='center';
+    ctx.fillStyle='#cfdbff';
+    ctx.fillText(n.id + (n.solar?' ☀':''),
+      n.x, n.y-(RADIUS+10));
+
+    // selection ring
+    if(n.id === selectedId){
+      ctx.beginPath(); ctx.arc(n.x, n.y, RADIUS+6, 0, Math.PI*2);
+      ctx.lineWidth = 2/cam.s; ctx.strokeStyle = '#68a0ff'; ctx.stroke();
+    }
+
+    if(n.tx>0) n.tx -= 0.04;
+  });
+
+  // packet animation
+  const t = now();
+  packets = packets.filter(p=>{
+    const k = Math.min(1, (t - p.t0)/p.dur);
+    const x = p.ax + (p.bx - p.ax)*k, y = p.ay + (p.by - p.ay)*k;
+    ctx.save(); ctx.scale(1/cam.s, 1/cam.s);
+    ctx.beginPath(); ctx.arc(x/cam.s - cam.x, y/cam.s - cam.y, 6, 0, Math.PI*2);
+    ctx.fillStyle = '#68a0ff'; ctx.fill();
+    ctx.restore();
+    return k < 1;
+  });
+
+  ctx.restore();
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+/* Interactions: drag, pan, zoom, select, dblclick solar, ctrl-click add */
+let dragging=null, pan=false, panStart, camStart;
+cv.addEventListener('mousedown', e=>{
+  const w = toW(e.offsetX, e.offsetY);
+  if(e.shiftKey){ pan=true; panStart={x:e.clientX,y:e.clientY}; camStart={...cam}; return; }
+  // hit test
+  for(let i=nodes.length-1;i>=0;i--){
+    const n = nodes[i];
+    if(Math.hypot(w.x-n.x,w.y-n.y)<=RADIUS+4){ dragging={id:n.id, dx:w.x-n.x, dy:w.y-n.y}; selectNode(n.id); return; }
+  }
+  // empty space click (deselect)
+  selectNode(null);
+});
+addEventListener('mousemove', e=>{
+  if(pan){ cam.x = camStart.x + (e.clientX-panStart.x)/cam.s; cam.y = camStart.y + (e.clientY-panStart.y)/cam.s; recomputeEdges(); return; }
+  if(!dragging) return;
+  const w = toW(e.offsetX, e.offsetY);
+  const n = nodes.find(m=>m.id===dragging.id); if(!n) return;
+  n.x = w.x - dragging.dx; n.y = w.y - dragging.dy; recomputeEdges();
+});
+addEventListener('mouseup', ()=>{ dragging=null; pan=false; });
+cv.addEventListener('wheel', e=>{
+  const f = Math.sign(e.deltaY)>0 ? 0.9 : 1.1;
+  const before = toW(e.offsetX, e.offsetY);
+  cam.s = Math.min(2.5, Math.max(0.5, cam.s*f));
+  const after = toW(e.offsetX, e.offsetY);
+  cam.x += (before.x - after.x); cam.y += (before.y - after.y);
+});
+cv.addEventListener('dblclick', e=>{
+  const w = toW(e.offsetX, e.offsetY);
+  const n = nodes.find(n=>Math.hypot(w.x-n.x,w.y-n.y)<=RADIUS+4);
+  if(n){ n.solar = !n.solar; draw(); if(n.id===selectedId) updateInspector(); }
+});
+cv.addEventListener('click', e=>{
+  // Ctrl/Cmd + click to add node at cursor
+  if(e.ctrlKey || e.metaKey){
+    const w = toW(e.offsetX, e.offsetY);
+    addNodeAt(w.x, w.y);
+  }
+});
+addEventListener('keydown', (e)=>{
+  if(e.key==='Delete' && selectedId){
+    const idx = nodes.findIndex(n=>n.id===selectedId);
+    if(idx>=0){ logTrace(`- Deleted node ${nodes[idx].id}`); nodes.splice(idx,1); selectedId=null; updateInspector(); refreshSenderList(); recomputeEdges(); draw(); }
+  }
+  if(e.key.toLowerCase()==='r' && selectedId){
+    const n = nodes.find(x=>x.id===selectedId); if(!n) return;
+    const name = prompt('New SSID?', n.id); if(name){ n.id = name.trim(); refreshSenderList(); updateInspector(); draw(); }
+  }
+});
+
+/* Wiring */
+$('send').onclick = sendDemo;
+$('reset').onclick = seed;
+
+/* Init */
+seed();
+</script>
+</body>
+</html>
